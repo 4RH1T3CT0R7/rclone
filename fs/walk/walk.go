@@ -470,6 +470,9 @@ func walkRDirTree(ctx context.Context, f fs.Fs, startPath string, includeAll boo
 	// Entries can come in arbitrary order. We use toPrune to keep
 	// all directories to exclude later.
 	toPrune := make(map[string]bool)
+	// Directories which are in dirs or have been checked already.
+	// We use this instead of dirs.Find which is O(N).
+	dirsDone := make(map[string]struct{})
 	includeDirectory := fi.IncludeDirectory(ctx, f)
 	var mu sync.Mutex
 	err := listR(ctx, startPath, func(entries fs.DirEntries) error {
@@ -498,14 +501,14 @@ func walkRDirTree(ctx context.Context, f fs.Fs, startPath string, includeAll boo
 							dirPath = parentDir(dirPath)
 						}
 					}
-					inc, err := includeDirectory(dirPath)
-					if err != nil {
-						return err
-					}
-					if inc || includeAll {
-						// If the directory doesn't exist already, create it
-						_, obj := dirs.Find(dirPath)
-						if obj == nil {
+					if _, found := dirsDone[dirPath]; !found {
+						dirsDone[dirPath] = struct{}{}
+						inc, err := includeDirectory(dirPath)
+						if err != nil {
+							return err
+						}
+						if inc || includeAll {
+							// The directory doesn't exist already so create it
 							dirs.AddDir(fs.NewDir(dirPath, time.Now()))
 						}
 					}
@@ -533,6 +536,7 @@ func walkRDirTree(ctx context.Context, f fs.Fs, startPath string, includeAll boo
 						} else {
 							dirs.AddDir(x)
 						}
+						dirsDone[x.Remote()] = struct{}{}
 					}
 				}
 			default:

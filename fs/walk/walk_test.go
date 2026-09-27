@@ -653,6 +653,58 @@ a/b2/
 			level:   -1,
 			exclude: ".bzEmpty",
 		},
+		{
+			entries: fs.DirEntries{
+				mockdir.New("a"),
+				mockobject.Object("a/x.tmp"),
+				mockobject.Object("a/y.tmp"),
+				mockobject.Object("b/z.tmp"),
+				mockobject.Object("c.tmp"),
+				mockobject.Object("b/w.tmp"),
+				mockobject.Object("d.txt"),
+			},
+			want: `/
+  a/
+  b/
+  d.txt
+a/
+b/
+`,
+			level:   -1,
+			exclude: "*.tmp",
+		},
+		{
+			entries: fs.DirEntries{
+				mockdir.New("a/b"),
+				mockobject.Object("a/b/c/1"),
+				mockobject.Object("a/b/c/2"),
+				mockobject.Object("a/b/d/3"),
+				mockobject.Object("a/e/f/4"),
+				mockobject.Object("a/e/g/5"),
+			},
+			want: `/
+  a/
+a/
+  b/
+  e/
+a/e/
+`,
+			level: 2,
+		},
+		{
+			// an object named like the directory of an excluded file
+			entries: fs.DirEntries{
+				mockobject.Object("a"),
+				mockobject.Object("a/x.tmp"),
+			},
+			want: `/
+  a/
+  a
+a/
+`,
+			level:   -1,
+			exclude: "*.tmp",
+		},
 	} {
 		ctx := context.Background()
 		if test.exclude != "" {
@@ -667,6 +719,48 @@ a/b2/
 		what := fmt.Sprintf("%+v", test)
 		assert.Equal(t, test.err, err, what)
 		assert.Equal(t, test.want, r.String(), what)
+	}
+}
+
+func BenchmarkWalkRDirTreeExclude(b *testing.B) {
+	fi, err := filter.NewFilter(nil)
+	require.NoError(b, err)
+	require.NoError(b, fi.Add(false, "*.tmp"))
+	ctx := filter.ReplaceConfig(context.Background(), fi)
+	for _, test := range []struct {
+		name    string
+		level   int
+		Ns      []int
+		remotes func(i int) []string
+	}{
+		// files in the root, half of them excluded
+		{"flat", -1, []int{1e4, 5e4, 1e5}, func(i int) []string {
+			return []string{fmt.Sprintf("file%09d.txt", i), fmt.Sprintf("file%09d.tmp", i)}
+		}},
+		// directories with an excluded file each and no
+		// directory entries, as returned by bucket based remotes
+		{"dirs", -1, []int{1e4, 1e5}, func(i int) []string {
+			return []string{fmt.Sprintf("dir%09d/keep.txt", i), fmt.Sprintf("dir%09d/skip.tmp", i)}
+		}},
+		// 100 directories of 1000 directories with files below maxLevel
+		{"maxdepth", 2, []int{1e5}, func(i int) []string {
+			return []string{fmt.Sprintf("dir%03d/sub%09d/deep/file.txt", i/1000, i)}
+		}},
+	} {
+		for _, N := range test.Ns {
+			b.Run(fmt.Sprintf("%s-%d", test.name, N), func(b *testing.B) {
+				var entries fs.DirEntries
+				for i := range N {
+					for _, remote := range test.remotes(i) {
+						entries = append(entries, mockobject.New(remote))
+					}
+				}
+				for b.Loop() {
+					_, err := walkRDirTree(ctx, nil, "", false, test.level, makeListRCallback(entries, nil))
+					require.NoError(b, err)
+				}
+			})
+		}
 	}
 }
 
